@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build C++ server and tests
+        run: make -B all
+
+      - name: Run unit tests
+        run: ./bin/test_core
+
+      - name: Smoke test health and metrics
+        run: |
+          ./bin/blob_server --port 8199 --data-dir data_ci --io-threads 2 > server.log 2>&1 &
+          SERVER_PID=$!
+          sleep 1
+          curl -fsS http://127.0.0.1:8199/health
+          curl -fsS http://127.0.0.1:8199/metrics | grep blob_rooms
+          kill "$SERVER_PID"

@@ -1,0 +1,12 @@
+services:
+  arena:
+    build: .
+    image: blob-arena:local
+    ports:
+      - "8080:8080"
+    volumes:
+      - arena-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  arena-data:

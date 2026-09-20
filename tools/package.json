@@ -1,0 +1,4 @@
+{
+  "//": "tools/ 内的脚本按 CommonJS 解析（根 package.json 是 ES module，否则 wsclient.js 会被当成 ESM）",
+  "type": "commonjs"
+}

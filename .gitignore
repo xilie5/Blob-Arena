@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# Blob Arena repository ignore rules
+#
+# The public repository should contain source code, tests, build/deployment
+# configuration, and browser assets only. Generated files, runtime data,
+# local tooling state, secrets, and private project documents stay local.
+# ---------------------------------------------------------------------------
+
+# C++ build outputs
+/bin/*
+!/bin/.gitkeep
+/build/
+/out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# CMake-generated files
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/CTestTestfile.cmake
+/Testing/
+/*.ninja
+/build.ninja
+/compile_commands.json
+
+# Frontend dependencies and build output
+/node_modules/
+/tools/node_modules/
+/web/dist/
+/.vite/
+/coverage/
+
+# Runtime data and generated reports
+/data/
+/data_ci/
+/runtime/
+/reports/
+*.log
+*.tmp
+*.temp
+*.pid
+*.out
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/secrets/
+/certs/
+
+# Editor and IDE state
+/.vscode/
+/.idea/
+/.vs/
+*.swp
+*.swo
+*.user
+*.suo
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Local documents and interview preparation material
+# These files remain on disk but are intentionally excluded from GitHub.
+/docs/
+
+# Local-only performance and weak-network experiment tools
+/tools/load_test.js
+/tools/weak_net_proxy.js

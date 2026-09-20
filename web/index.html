@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Blob Arena</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <div id="hud" class="hud hidden">
+    <div class="hud-left">
+      <div class="stat"><span class="stat-label">在线</span><span id="stat-online" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">FPS</span><span id="stat-fps" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">延迟</span><span id="stat-ping" class="stat-value">--</span></div>
+      <div class="stat"><span class="stat-label">分数</span><span id="stat-score" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">排名</span><span id="stat-rank" class="stat-value">--</span></div>
+    </div>
+
+    <div id="phase-banner" class="phase-banner hidden" aria-live="polite">
+      <span class="phase-content">
+        <span id="phase-label" class="phase-label">等待玩家</span>
+        <span class="phase-divider">-</span>
+        <span id="phase-remain" class="phase-remain">--</span>
+        <span class="phase-suffix"> 秒</span>
+        <span id="phase-shrink" class="phase-shrink hidden"></span>
+      </span>
+    </div>
+
+    <button id="btn-exit-room" class="exit-room" aria-label="退出房间">退出</button>
+
+    <div class="hud-right">
+      <div class="panel-title">排行榜</div>
+      <ol id="leaderboard" class="leaderboard">
+        <li class="leaderboard-empty">等待数据 ...</li>
+      </ol>
+      <ul id="kill-feed" class="kill-feed"></ul>
+    </div>
+  </div>
+
+  <div id="death-flash" class="death-flash"></div>
+
+  <div id="hint" class="hint hidden">
+    <span class="key">鼠标</span> 控制方向.&nbsp;<span class="key">W A S D</span> 备用方向键.&nbsp;<span class="key">空格</span> 停止
+  </div>
+
+  <div id="wait-panel" class="overlay hidden">
+    <div class="card card-wait">
+      <div class="wait-title">房间准备中</div>
+      <div class="wait-code" id="wait-code">----</div>
+      <div class="wait-hint" id="wait-hint">等待玩家加入，满 4 人或倒计时结束后开局</div>
+      <div class="wait-count"><span id="wait-players">1 / 4</span></div>
+      <button id="btn-wait-cancel" class="wait-cancel" type="button">离开房间</button>
+    </div>
+  </div>
+
+  <div id="settlement-panel" class="overlay hidden" aria-live="polite">
+    <div class="card card-settlement">
+      <div class="settlement-eyebrow">本局结束</div>
+      <div id="settlement-title" class="settlement-title">--</div>
+      <div id="settlement-reason" class="settlement-reason">--</div>
+      <ol id="settlement-ranking" class="settlement-ranking"></ol>
+      <div class="settlement-actions">
+        <button id="btn-rematch" class="btn-secondary" type="button">再来一局</button>
+        <button id="btn-back-lobby" class="btn-primary" type="button">返回大厅</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="overlay" class="overlay">
+    <div class="card card-wide">
+      <h1 class="title">Blob <span class="title-accent">Arena</span></h1>
+      <p class="subtitle">4 人短局竞技，吞噬、成长、登上榜首</p>
+
+      <label class="field">
+        <span class="field-label">昵称</span>
+        <input id="nickname" type="text" maxlength="12" placeholder="输入昵称" autocomplete="off" />
+      </label>
+
+      <div class="mode-row">
+        <button id="btn-endless" class="mode-btn is-primary is-active" type="button">
+          <span class="mode-btn-title">快速匹配</span>
+          <span class="mode-btn-desc">自动加入正在等待的房间</span>
+        </button>
+        <button id="btn-create" class="mode-btn" type="button">
+          <span class="mode-btn-title">创建房间</span>
+          <span class="mode-btn-desc">获得 4 位房间码</span>
+        </button>
+        <button id="btn-join" class="mode-btn" type="button">
+          <span class="mode-btn-title">加入房间</span>
+          <span class="mode-btn-desc">输入好友的房间码</span>
+        </button>
+      </div>
+
+      <label id="join-room-field" class="field field-join hidden">
+        <span class="field-label">房间码</span>
+        <input id="room-code" type="text" maxlength="4" placeholder="4 位房间码" autocomplete="off" />
+      </label>
+
+      <p id="overlay-status" class="status">正在准备 ...</p>
+      <p class="stage-note">服务端权威 · 30Hz · 180 秒短局</p>
+    </div>
+  </div>
+
+  <script type="module" src="./js/game.js"></script>
+</body>
+</html>

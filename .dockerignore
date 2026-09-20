@@ -1,0 +1,11 @@
+.git
+.git.hold
+node_modules
+bin
+data
+data_*
+loadlogs
+web/dist
+*.log
+docs
+_screenshot_lobby.png
