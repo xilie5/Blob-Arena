@@ -12,9 +12,12 @@ namespace net {
 
 namespace {
 
+// HTTP 头部最大字节数，超过视为攻击/畸形请求
 constexpr std::size_t kMaxHttpHeaderBytes = 16 * 1024;
+// 单个 WebSocket 帧载荷上限（1MB），防止超大帧耗尽内存
 constexpr std::size_t kMaxFramePayload     = 1024 * 1024;
 
+/// 字符串转小写（HTTP 头名称大小写不敏感）
 std::string toLower(const std::string& s) {
     std::string out = s;
     for (char& c : out) {
@@ -23,6 +26,7 @@ std::string toLower(const std::string& s) {
     return out;
 }
 
+/// 去掉首尾空格/制表符/回车（解析 HTTP 头值用）
 std::string trim(const std::string& s) {
     std::size_t b = 0;
     std::size_t e = s.size();
@@ -35,6 +39,7 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+/// 当前单调时钟的毫秒数（连接建立时间戳用）
 uint64_t nowMillis() {
     using namespace std::chrono;
     return static_cast<uint64_t>(
@@ -48,6 +53,7 @@ uint64_t nowMillis() {
 // ---------------------------------------------------------------------------
 
 std::string HttpRequest::header(const std::string& key) const {
+    // 存储时 key 已统一小写，查询时也把入参转小写
     auto it = headers.find(toLower(key));
     if (it == headers.end()) {
         return std::string();
@@ -58,6 +64,7 @@ std::string HttpRequest::header(const std::string& key) const {
 bool HttpRequest::isWebSocketUpgrade() const {
     const std::string upgrade = toLower(header("upgrade"));
     const std::string conn    = toLower(header("connection"));
+    // 两个条件同时成立才是 WebSocket 升级握手
     return upgrade == "websocket" && conn.find("upgrade") != std::string::npos;
 }
 
@@ -70,10 +77,11 @@ WsConnection::WsConnection(socket_t fd) : fd_(fd) {
 }
 
 void WsConnection::appendInput(const char* data, std::size_t len) {
-    in_.append(data, len);
+    in_.append(data, len);  // 仅累积，不解析（解析由事件循环显式驱动）
 }
 
 void WsConnection::consumeOut(std::size_t n) {
+    // send 部分成功后，把已发送的前缀删掉；全部发完直接 clear（O(1) 常见路径）
     if (n >= out_.size()) {
         out_.clear();
         return;
@@ -85,22 +93,24 @@ void WsConnection::consumeOut(std::size_t n) {
 
 WsConnection::HttpStatus WsConnection::parseHttpRequest() {
     if (headerParsed_) {
-        return HttpStatus::Done;
+        return HttpStatus::Done;  // 已解析过，等待 prepareForNextRequest 复位
     }
 
+    // HTTP 请求头以空行 \r\n\r\n 结束；找不到说明头还没收全（半包）
     const std::size_t pos = in_.find("\r\n\r\n");
     if (pos == std::string::npos) {
         if (in_.size() > kMaxHttpHeaderBytes) {
-            return HttpStatus::Error;
+            return HttpStatus::Error;  // 头超大：防护
         }
         return HttpStatus::NeedMore;
     }
 
-    const std::size_t end = pos + 4;
+    const std::size_t end = pos + 4;  // 包含空行的 4 字节
     const std::string head = in_.substr(0, pos);
 
     request_ = HttpRequest();
 
+    // 逐行解析：第一行是请求行，其余每行是 "Key: Value"
     std::size_t lineStart = 0;
     bool firstLine = true;
     while (lineStart <= head.size()) {
@@ -124,6 +134,7 @@ WsConnection::HttpStatus WsConnection::parseHttpRequest() {
             const std::string target = line.substr(sp1 + 1, sp2 - sp1 - 1);
             request_.version = trim(line.substr(sp2 + 1));
 
+            // target 拆成 path 与 query（以 ? 分界）
             const std::size_t qm = target.find('?');
             if (qm == std::string::npos) {
                 request_.path = target;
@@ -132,6 +143,7 @@ WsConnection::HttpStatus WsConnection::parseHttpRequest() {
                 request_.query = target.substr(qm + 1);
             }
         } else if (!line.empty()) {
+            // 头部行：第一个冒号前是 key（转小写），后面是 value（去空白）
             const std::size_t colon = line.find(':');
             if (colon != std::string::npos) {
                 const std::string key = toLower(trim(line.substr(0, colon)));
@@ -148,6 +160,7 @@ WsConnection::HttpStatus WsConnection::parseHttpRequest() {
         lineStart = lineEnd + 2;
     }
 
+    // 按 Content-Length 等请求体（POST /api/login 的 JSON 在这里）
     std::size_t contentLength = 0;
     const std::string contentLengthText = request_.header("content-length");
     if (!contentLengthText.empty()) {
@@ -155,16 +168,18 @@ WsConnection::HttpStatus WsConnection::parseHttpRequest() {
             contentLength = static_cast<std::size_t>(
                 std::stoull(contentLengthText));
         } catch (...) {
-            return HttpStatus::Error;
+            return HttpStatus::Error;  // 长度字段不是数字
         }
     }
     if (contentLength > kMaxHttpHeaderBytes) {
         return HttpStatus::Error;
     }
     if (in_.size() < end + contentLength) {
-        return HttpStatus::NeedMore;
+        return HttpStatus::NeedMore;  // 请求体还没到齐
     }
 
+    // 请求完整：记录结束位置、取请求体，并从入站缓冲删掉已消费字节
+    // （剩余字节可能是 keep-alive 连接上的下一个请求）
     headerEnd_    = end;
     headerParsed_ = true;
     request_.body = in_.substr(end, contentLength);
@@ -174,7 +189,7 @@ WsConnection::HttpStatus WsConnection::parseHttpRequest() {
 
 void WsConnection::prepareForNextRequest() {
     if (websocket_) {
-        return;
+        return;  // WebSocket 升级后没有“下一个 HTTP 请求”，不可复位
     }
     request_      = HttpRequest();
     headerEnd_    = 0;
@@ -190,11 +205,13 @@ bool WsConnection::acceptWebSocketUpgrade() {
 
     const std::string key = request_.header("sec-websocket-key");
     if (key.empty()) {
-        return false;
+        return false;  // 缺少客户端随机 key，无法完成握手
     }
 
+    // 按 RFC 6455 计算应答值
     const std::string accept = computeWebSocketAccept(key);
 
+    // 拼 101 Switching Protocols 握手响应
     std::string response;
     response += "HTTP/1.1 101 Switching Protocols\r\n";
     response += "Upgrade: websocket\r\n";
@@ -203,7 +220,7 @@ bool WsConnection::acceptWebSocketUpgrade() {
     response += "\r\n";
     out_ += response;
 
-    websocket_    = true;
+    websocket_    = true;   // 此后入站字节按 WS 帧解析
     headerParsed_ = false;
     return true;
 }
@@ -217,19 +234,23 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
     const std::size_t size = in_.size();
     const uint8_t* data = reinterpret_cast<const uint8_t*>(in_.data());
 
+    // 循环解析尽可能多的完整帧；不完整就跳出保留字节等下次（半包）
     while (true) {
         if (size - pos < 2) {
-            break;
+            break;  // 连 2 字节帧头都不够
         }
+        // 帧第 1 字节：最高位 FIN（是否最后一片），低 4 位 opcode
         const uint8_t b0     = data[pos];
         const uint8_t b1     = data[pos + 1];
         const bool    fin    = (b0 & 0x80u) != 0;
         const uint8_t opcode = b0 & 0x0Fu;
+        // 帧第 2 字节：最高位 MASK（客户端帧必须掩码），低 7 位是载荷长度
         const bool    masked = (b1 & 0x80u) != 0;
 
         uint64_t    payloadLen = b1 & 0x7Fu;
         std::size_t headerLen  = 2;
 
+        // 长度 126：随后 2 字节才是真实长度；127：随后 8 字节
         if (payloadLen == 126u) {
             if (size - pos < 4) {
                 break;
@@ -248,6 +269,7 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
             headerLen = 10;
         }
 
+        // 掩码占 4 字节（紧跟长度字段之后、载荷之前）
         std::size_t maskOffset = 0;
         if (masked) {
             if (size - pos < headerLen + 4) {
@@ -258,13 +280,14 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
         }
 
         if (payloadLen > kMaxFramePayload) {
-            closed = true;
+            closed = true;   // 超大帧：协议错误，关闭
             return false;
         }
         if (size - pos < headerLen + static_cast<std::size_t>(payloadLen)) {
-            break;
+            break;  // 载荷没收全：半包
         }
 
+        // 拷出载荷；客户端帧必须按 4 字节掩码循环异或还原
         std::string payload(
             reinterpret_cast<const char*>(data + pos + headerLen),
             static_cast<std::size_t>(payloadLen));
@@ -277,10 +300,12 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
         }
         pos += headerLen + static_cast<std::size_t>(payloadLen);
 
+        // 按 opcode 分发
         switch (opcode) {
-            case 0x0:  // continuation
+            case 0x0:  // continuation 续帧：拼到当前分片消息后面
                 fragBuffer_ += payload;
                 if (fin) {
+                    // 最后一片到达：按首帧类型作为完整消息产出
                     if (fragOpcode_ == 0x1 || fragOpcode_ == 0x2) {
                         out.push_back(fragBuffer_);
                     }
@@ -288,25 +313,26 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
                     fragOpcode_ = 0;
                 }
                 break;
-            case 0x1:  // text
-            case 0x2:  // binary
+            case 0x1:  // text 文本
+            case 0x2:  // binary 二进制（游戏业务包）
                 if (fin) {
-                    out.push_back(std::move(payload));
+                    out.push_back(std::move(payload));  // 单帧完整消息
                 } else {
+                    // 分片消息的第一片：记住类型并开始累积
                     fragOpcode_ = opcode;
                     fragBuffer_ = std::move(payload);
                 }
                 break;
-            case 0x8:  // close
+            case 0x8:  // close：通知上层关闭连接
                 closed = true;
                 break;
-            case 0x9:  // ping -> pong
+            case 0x9:  // ping：协议要求必须立即回 pong（保活机制）
                 sendPong(payload);
                 break;
-            case 0xA:  // pong，忽略
+            case 0xA:  // pong：心跳应答，忽略
                 break;
             default:
-                closed = true;
+                closed = true;  // 未知 opcode：协议错误
                 return false;
         }
 
@@ -315,6 +341,7 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
         }
     }
 
+    // 丢掉已解析的前缀（一次处理多帧，剩余的留给下次；天然解决帧的粘包）
     in_.erase(0, pos);
     return true;
 }
@@ -322,9 +349,10 @@ bool WsConnection::decodeFrames(std::vector<std::string>& out, bool& closed) {
 // ------------------------------ 帧编码 ------------------------------
 
 void WsConnection::encodeFrame(uint8_t opcode, const char* data, std::size_t len) {
-    // 服务端发出的帧不加掩码（RFC 6455 规定）
+    // 服务端发出的帧不加掩码（RFC 6455 规定）；最高位固定 1 表示 FIN
     out_.push_back(static_cast<char>(0x80u | opcode));
 
+    // 长度编码三档：<126 直接写；<65536 写 126+2字节；否则写 127+8字节（大端序）
     if (len < 126) {
         out_.push_back(static_cast<char>(len));
     } else if (len < 65536) {
@@ -356,6 +384,7 @@ void WsConnection::sendPong(const std::string& payload) {
 }
 
 void WsConnection::sendClose(uint16_t code) {
+    // close 帧带 2 字节大端序关闭码
     char buf[2];
     buf[0] = static_cast<char>((code >> 8) & 0xFFu);
     buf[1] = static_cast<char>(code & 0xFFu);
@@ -367,14 +396,15 @@ void WsConnection::sendClose(uint16_t code) {
 void WsConnection::sendHttpResponse(int statusCode, const std::string& statusText,
                                     const std::string& contentType,
                                     const std::string& body) {
+    // 手工拼 HTTP/1.1 响应（无第三方 HTTP 库）
     std::string response;
     response += "HTTP/1.1 " + std::to_string(statusCode) + " " + statusText + "\r\n";
     response += "Server: blob-arena\r\n";
     response += "Content-Type: " + contentType + "\r\n";
     response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    response += "Cache-Control: no-cache\r\n";
-    response += "Connection: keep-alive\r\n";
-    response += "\r\n";
+    response += "Cache-Control: no-cache\r\n";     // 接口/页面不缓存，便于联调
+    response += "Connection: keep-alive\r\n";      // 支持同连接发后续请求
+    response += "\r\n";                            // 头结束空行
     response += body;
     out_ += response;
 }

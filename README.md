@@ -51,8 +51,11 @@ Windows MinGW：
 
 ```powershell
 mingw32-make -B all
-bin\blob_server.exe --port 8080 --data-dir data
+bin\blob_server.exe --port 8080 --web web --data-dir data
 ```
+
+启动后访问 `http://127.0.0.1:8080`。不要直接双击 `web/index.html`，浏览器需要通过
+HTTP 加载页面，并通过同一个地址访问 `/api/*` 和 `/ws`。
 
 CMake：
 
@@ -68,18 +71,29 @@ mingw32-make -B testrun
 node tools/qa_scenarios.js --port 8199
 ```
 
-前端开发：
+开发模式（推荐）：
 
 ```powershell
 npm ci
 npm run dev
 ```
 
+`npm run dev` 会先构建并启动 C++ 服务端，再启动 Vite：
+
+- 前端开发页：`http://127.0.0.1:5173`
+- C++ 服务端：`http://127.0.0.1:8080`
+
+如果只想单独启动 Vite，可使用 `npm run dev:web`，但必须先自行启动 C++ 服务端。
+
 生产构建：
 
 ```powershell
 npm run build
 ```
+
+数据默认保存在本地 `data/` 目录。当前实现使用 TSV 文件，不需要连接 MySQL、Redis
+或其他数据库服务。页面出现“无法连接 C++ 服务端”时，应检查 8080 服务是否启动，
+而不是检查数据库连接。
 
 ## 服务端架构
 

@@ -78,6 +78,9 @@ const state = {
   lastFrameAt: performance.now(),
   frameCount: 0,
   lastFpsAt: performance.now(),
+  manualClose: false,
+  reconnectTimer: null,
+  reconnectAttempts: 0,
 };
 
 const renderer = new Renderer(els.canvas);
@@ -120,6 +123,35 @@ function setMode(mode) {
 function sanitizeName() {
   const value = (els.nickname.value || '').trim().slice(0, 12);
   return value || `Player${Math.floor(Math.random() * 900 + 100)}`;
+}
+
+function serverUnavailableMessage() {
+  if (window.location.protocol === 'file:') {
+    return '请通过 http://127.0.0.1:8080 或 npm run dev 打开页面，不要直接双击 index.html';
+  }
+  return `无法连接 C++ 服务端（${window.location.host}）。请先运行 npm run dev，或启动 bin/blob_server.exe --port 8080`;
+}
+
+async function ensureServerReachable() {
+  if (window.location.protocol === 'file:') {
+    throw new Error(serverUnavailableMessage());
+  }
+
+  let response;
+  try {
+    response = await fetch('/health', { cache: 'no-store' });
+  } catch (error) {
+    throw new Error(serverUnavailableMessage());
+  }
+
+  if (!response.ok) {
+    throw new Error(serverUnavailableMessage());
+  }
+
+  const health = await response.json().catch(() => null);
+  if (health?.status !== 'ok') {
+    throw new Error(serverUnavailableMessage());
+  }
 }
 
 async function ensureSession(name) {
@@ -181,17 +213,25 @@ function ensureNet() {
     wsPath: CONFIG.wsPath,
     onState: onConnectionState,
     onPacket: onPacket,
-    onError: (message) => setStatus(message, true),
+    onError: () => setStatus(serverUnavailableMessage(), true),
   });
   return state.net;
 }
 
 async function connectAndRun(action) {
+  state.manualClose = false;
+  state.reconnectAttempts = 0;
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
   state.pendingAction = action;
   try {
+    setStatus('正在检查服务端 ...');
+    await ensureServerReachable();
     await ensureSession(sanitizeName());
   } catch (error) {
-    setStatus(error.message || '登录失败', true);
+    setStatus(error.message || serverUnavailableMessage(), true);
     return;
   }
   const net = ensureNet();
@@ -228,8 +268,38 @@ function runPendingAction() {
   }
 }
 
+function scheduleReconnect() {
+  if (state.manualClose || state.reconnectTimer) return;
+  if (!state.authToken) return;
+
+  const hasRoom =
+    state.joined || state.inRoom || state.roomCode ||
+    !!localStorage.getItem('blob.roomCode');
+  if (!hasRoom) return;
+
+  if (state.reconnectAttempts >= 5) {
+    setStatus('重连失败，请刷新页面', true);
+    return;
+  }
+
+  const delay = Math.min(5000, 500 * 2 ** state.reconnectAttempts);
+  state.reconnectAttempts += 1;
+  setStatus(`连接断开，${Math.ceil(delay / 1000)} 秒后重连 ...`, true);
+
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    if (state.manualClose) return;
+    ensureNet().connect();
+  }, delay);
+}
+
 function onConnectionState(connectionState, detail) {
   if (connectionState === ConnectionState.OPEN) {
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+    state.reconnectAttempts = 0;
     setStatus('已连接，正在鉴权 ...');
     state.net.sendAuth(state.authToken);
   } else if (connectionState === ConnectionState.CLOSED) {
@@ -238,6 +308,7 @@ function onConnectionState(connectionState, detail) {
     }
     state.joined = false;
     state.inRoom = false;
+    scheduleReconnect();
   }
 }
 
@@ -339,6 +410,13 @@ function onResumeOk(reader) {
   state.resuming = false;
   state.joined = true;
   state.inRoom = true;
+  state.pendingAction = null;
+  state.manualClose = false;
+  state.reconnectAttempts = 0;
+  // 服务端恢复后会把当前视野重新全量下发；先清掉断线前的旧实体，避免鬼影
+  state.entities.clear();
+  state.killFeed = [];
+  state.result = [];
   localStorage.setItem('blob.roomCode', state.roomCode);
   els.waitCode.textContent = state.roomCode || '----';
   setView({ overlay: false, hud: true, wait: false, settlement: false });
@@ -476,6 +554,11 @@ function onServerError(reader) {
   if (state.resuming) {
     state.resuming = false;
     localStorage.removeItem('blob.roomCode');
+    if (!state.pendingAction) {
+      setStatus('恢复失败，请重新进入房间', true);
+      setView({ overlay: true, wait: false, hud: false });
+      return;
+    }
     setStatus('恢复失败，正在重新匹配 ...', true);
     runPendingAction();
     return;
@@ -660,6 +743,12 @@ function tick(now) {
 }
 
 function resetToLobby() {
+  state.manualClose = true;
+  state.reconnectAttempts = 0;
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
   state.net?.disconnect();
   state.net = null;
   state.pendingAction = null;
@@ -698,4 +787,17 @@ els.rematch.addEventListener('click', startRematch);
 
 setView({ overlay: true, wait: false, hud: false, settlement: false });
 setMode('quick');
+
+const savedName = localStorage.getItem('blob.username') || '';
+if (savedName) {
+  els.nickname.value = savedName;
+}
+
+const savedToken = localStorage.getItem('blob.token') || '';
+const savedRoom = localStorage.getItem('blob.roomCode') || '';
+if (savedToken && savedName && savedRoom) {
+  setStatus('检测到上一局，正在恢复 ...');
+  connectAndRun({ type: 'quick' });
+}
+
 requestAnimationFrame(tick);

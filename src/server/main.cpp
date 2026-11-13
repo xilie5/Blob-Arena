@@ -6,6 +6,9 @@
 //
 //  启动后直接用浏览器打开 http://127.0.0.1:8080 即可试玩。
 //  同一个端口同时提供静态资源与 WebSocket，无需额外的 Web 服务器。
+//
+//  流程：解析命令行参数 -> 构造 Gateway -> start() 装配并启动全部线程
+//        -> run() 进入主线程事件循环（接入 + 消息转发 + 统计节拍）
 // =============================================================================
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +21,7 @@
 
 namespace {
 
+/// 打印命令行帮助文本
 void printUsage() {
     std::printf("Blob Arena server\n");
     std::printf("Usage: blob_server [options]\n");
@@ -38,8 +42,9 @@ void printUsage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // ServerOptions 中的字段均带默认值（基础设施项直接给值，游戏规则项引用 cfg::），
+    // 这里逐命令行参数进行覆盖。
     blob::ServerOptions options;
-
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
@@ -68,6 +73,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--io-threads" && i + 1 < argc) {
             const int n = std::atoi(argv[++i]);
             if (n > 0) options.ioThreads = static_cast<std::size_t>(n);
+            // Gateway::start 内部还会 clamp 到 [1,16]
         } else if (arg == "--reconnect-grace" && i + 1 < argc) {
             const int n = std::atoi(argv[++i]);
             if (n > 0) options.reconnectGraceMs = n;
@@ -79,18 +85,21 @@ int main(int argc, char** argv) {
                         blob::kProjectVersion);
             return 0;
         } else {
+            // 未识别参数：提示并以非 0 退出码结束（部署脚本可感知失败）
             std::printf("unknown argument: %s\n", arg.c_str());
             printUsage();
             return 1;
         }
     }
 
+    // 构造网关（此时还不占用系统资源），start 装配全部组件与线程
     blob::Gateway gateway(options);
     if (!gateway.start()) {
         std::printf("[main] server start failed\n");
         return 1;
     }
 
+    // 进入主线程循环，直到内部 running_ 变为 false（当前版本由析构/测试触发 stop）
     gateway.run();
     return 0;
 }

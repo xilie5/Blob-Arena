@@ -2,6 +2,7 @@
 .git.hold
 node_modules
 bin
+build_out
 data
 data_*
 loadlogs

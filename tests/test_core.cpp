@@ -332,6 +332,16 @@ void testLobbyQuickMatch() {
     blob::Room* second = lobby.quickMatch();
     CHECK(second != nullptr);
     CHECK(second != first);
+    CHECK(lobby.rooms().size() == 2);
+
+    // 两个房间各自持有独立 World：往 second 加人不会改变 first 的实体数
+    const std::size_t firstEntities = first->world().size();
+    const std::size_t secondEntities = second->world().size();
+    CHECK(firstEntities > 0);
+    CHECK(secondEntities > 0);
+    CHECK(second->addPlayer("Q") != blob::kInvalidEntityId);
+    CHECK(first->world().size() == firstEntities);
+    CHECK(second->world().size() == secondEntities + 1);
 }
 
 void testLobbyPrune() {

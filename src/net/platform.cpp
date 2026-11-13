@@ -15,6 +15,11 @@ namespace net {
 
 bool initialize() {
 #ifdef _WIN32
+    // Windows 使用 winsock 前必须先 WSAStartup 协商版本（2.2）--MAKEWORD(主版本号, 副版本号)
+    // /WSADATA是什么：输出结构体，调用后系统会把当前 Winsock 的实际信息填进去：
+    // 1. 系统实际支持的最高版本；
+    // 2. 系统支持的 Winsock 描述；
+    // 3. 最多支持的 socket 数量、最大数据报长度等。
     WSADATA wsaData;
     const int rc = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (rc != 0) {
@@ -24,14 +29,15 @@ bool initialize() {
     timeBeginPeriod(1);
     return true;
 #else
+    // Linux 无需进程级网络初始化
     return true;
 #endif
 }
 
 void shutdown() {
 #ifdef _WIN32
-    timeEndPeriod(1);
-    WSACleanup();
+    timeEndPeriod(1);   // 恢复系统定时器精度
+    WSACleanup();       // 释放 winsock 资源
 #endif
 }
 
@@ -44,6 +50,8 @@ int lastError() {
 }
 
 bool isWouldBlock(int err) {
+    // 非阻塞 socket 在“无数据可读/发送缓冲暂满”时返回的不是致命错误，
+    // 事件循环据此停止本轮读/写，等待下一次就绪通知。
 #ifdef _WIN32
     return err == WSAEWOULDBLOCK;
 #else
@@ -53,9 +61,11 @@ bool isWouldBlock(int err) {
 
 bool setNonBlocking(socket_t fd) {
 #ifdef _WIN32
+    // Windows：ioctlsocket + FIONBIO 切换阻塞模式
     u_long mode = 1;
     return ioctlsocket(fd, FIONBIO, &mode) == 0;
 #else
+    // Linux：先取当前 flag，再位或 O_NONBLOCK 写回（保留其他 flag）
     const int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) {
         return false;
@@ -65,6 +75,7 @@ bool setNonBlocking(socket_t fd) {
 }
 
 bool setNoDelay(socket_t fd) {
+    // 关闭 Nagle 算法：游戏指令是高频小包，不能为“凑大包”而延迟发出
     int enable = 1;
     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
                       reinterpret_cast<const char*>(&enable),
@@ -75,6 +86,8 @@ int sendFlags() {
 #ifdef _WIN32
     return 0;
 #else
+    // Linux 默认向已关闭的 socket 写数据会触发 SIGPIPE，其默认动作是杀死进程；
+    // MSG_NOSIGNAL 让 send 只返回错误，不发信号。
     return MSG_NOSIGNAL;
 #endif
 }
@@ -107,6 +120,7 @@ std::string peerAddress(socket_t fd) {
 #else
         inet_ntop(AF_INET, &v4->sin_addr, host, sizeof(host));
 #endif
+        // 端口是网络字节序，ntohs 转主机字节序
         return std::string(host) + ":" + std::to_string(ntohs(v4->sin_port));
     }
 
@@ -124,7 +138,7 @@ void sleepMillis(int ms) {
 #ifdef _WIN32
     Sleep(static_cast<DWORD>(ms));
 #else
-    usleep(static_cast<useconds_t>(ms) * 1000);
+    usleep(static_cast<useconds_t>(ms) * 1000); // usleep 单位是微秒
 #endif
 }
 

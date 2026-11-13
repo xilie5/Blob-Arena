@@ -18,6 +18,7 @@ namespace blob {
 
 namespace {
 
+/// @brief 确保目录存在（不存在则创建；已存在视为成功）
 bool ensureDirectory(const std::string& directory) {
     if (directory.empty()) {
         return true;
@@ -30,6 +31,8 @@ bool ensureDirectory(const std::string& directory) {
     return rc == 0 || errno == EEXIST;
 }
 
+/// @brief TSV 字段转义：%、制表符、回车、换行编码成 %XX 十六进制
+/// @details 防止用户名中的特殊字符破坏列/行结构
 std::string escapeField(const std::string& value) {
     std::ostringstream out;
     out << std::hex << std::uppercase;
@@ -44,6 +47,7 @@ std::string escapeField(const std::string& value) {
     return out.str();
 }
 
+/// 单个十六进制字符转数值（非法返回 -1）
 int hexValue(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -51,6 +55,7 @@ int hexValue(char c) {
     return -1;
 }
 
+/// @brief TSV 字段转义的逆过程（%XX 还原为原字节）
 std::string unescapeField(const std::string& value) {
     std::string out;
     out.reserve(value.size());
@@ -69,6 +74,7 @@ std::string unescapeField(const std::string& value) {
     return out;
 }
 
+/// @brief 按制表符切分一行（保留空列）
 std::vector<std::string> splitTabs(const std::string& line) {
     std::vector<std::string> fields;
     std::size_t start = 0;
@@ -84,6 +90,7 @@ std::vector<std::string> splitTabs(const std::string& line) {
     return fields;
 }
 
+/// 解析 uint64，要求整串都是数字（成功返回 true）
 bool parseU64(const std::string& text, uint64_t& out) {
     try {
         std::size_t consumed = 0;
@@ -94,6 +101,7 @@ bool parseU64(const std::string& text, uint64_t& out) {
     }
 }
 
+/// 解析 int，要求整串都是数字（成功返回 true）
 bool parseInt(const std::string& text, int& out) {
     try {
         std::size_t consumed = 0;
@@ -109,6 +117,7 @@ bool parseInt(const std::string& text, int& out) {
 FileDataStore::FileDataStore(std::string directory)
     : directory_(std::move(directory)) {}
 
+/// @brief 拼出目录下文件的完整路径（自动补目录分隔符）
 std::string FileDataStore::pathFor(const std::string& filename) const {
     if (directory_.empty()) {
         return filename;
@@ -118,11 +127,12 @@ std::string FileDataStore::pathFor(const std::string& filename) const {
 }
 
 bool FileDataStore::load(std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);  // 加载期间禁止并发访问
     if (!ensureDirectory(directory_)) {
         error = "cannot create data directory";
         return false;
     }
+    // 四张表全部加载成功才算启动成功（宁可不启动也不带脏数据运行）
     return loadPlayers(error) && loadSessions(error) &&
            loadMatches(error) && loadMatchPlayers(error);
 }
@@ -130,7 +140,7 @@ bool FileDataStore::load(std::string& error) {
 bool FileDataStore::loadPlayers(std::string& error) {
     std::ifstream in(pathFor("players.tsv"));
     if (!in) {
-        return true;
+        return true;  // 文件不存在：首次运行，视为正常
     }
     std::string line;
     int lineNumber = 0;
@@ -154,6 +164,7 @@ bool FileDataStore::loadPlayers(std::string& error) {
         }
         players_[profile.id] = profile;
         playerIdByUsername_[normalizeUsername(profile.username)] = profile.id;
+        // 推进 ID 水位，保证后续新建 ID 不与历史冲突
         nextPlayerId_ = std::max(nextPlayerId_, profile.id + 1);
     }
     return true;
@@ -181,7 +192,7 @@ bool FileDataStore::loadSessions(std::string& error) {
             error = "invalid session record";
             return false;
         }
-        sessions_[fields[0]] = session;
+        sessions_[fields[0]] = session;  // 第 1 列是 token
     }
     return true;
 }
@@ -210,7 +221,7 @@ bool FileDataStore::loadMatches(std::string& error) {
             return false;
         }
         matches_.push_back(record);
-        recordedMatchIds_.insert(record.matchId);
+        recordedMatchIds_.insert(record.matchId);  // 载入幂等集合
     }
     return true;
 }
@@ -252,27 +263,30 @@ std::optional<LoginResult> FileDataStore::login(
     std::lock_guard<std::mutex> lock(mutex_);
     const std::string clean = normalizeUsername(username);
     if (clean.empty() || clean.size() > 24) {
-        return std::nullopt;
+        return std::nullopt;  // 用户名非法（空或超 24 字符）
     }
 
     PlayerId playerId = kInvalidPlayerId;
     auto existing = playerIdByUsername_.find(clean);
     if (existing == playerIdByUsername_.end()) {
+        // 新用户：分配 ID、落盘 players.tsv、写入内存两张表
         PlayerProfile profile;
         profile.id = nextPlayerId_++;
         profile.username = username;
         profile.createdAtMs = nowMillis();
         std::string error;
         if (!appendPlayer(profile, error)) {
-            return std::nullopt;
+            return std::nullopt;  // 磁盘写入失败，登录失败
         }
         players_[profile.id] = profile;
         playerIdByUsername_[clean] = profile.id;
         playerId = profile.id;
     } else {
+        // 老用户：直接取已存在的 ID（同名归一化后复用账号）
         playerId = existing->second;
     }
 
+    // 无论新老用户，每次登录都签发一个新的随机 token
     const std::string token = generateToken();
     SessionRecord session;
     session.playerId = playerId;
@@ -290,11 +304,11 @@ std::optional<PlayerProfile> FileDataStore::authenticate(
     std::lock_guard<std::mutex> lock(mutex_);
     auto session = sessions_.find(token);
     if (session == sessions_.end()) {
-        return std::nullopt;
+        return std::nullopt;  // token 不存在
     }
     auto player = players_.find(session->second.playerId);
     if (player == players_.end()) {
-        return std::nullopt;
+        return std::nullopt;  // 会话指向的玩家已不存在（数据异常）
     }
     return player->second;
 }
@@ -305,11 +319,13 @@ bool FileDataStore::recordMatch(
     uint64_t endedAtMs,
     const std::vector<MatchPlayerStanding>& standings) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // 幂等保护：空 ID/空排名/重复对局 ID 全部拒绝（防止结算重入导致重复记录）
     if (matchId.empty() || standings.empty() ||
         recordedMatchIds_.find(matchId) != recordedMatchIds_.end()) {
         return false;
     }
 
+    // 1) 追加对局主记录
     MatchRecord match;
     match.matchId = matchId;
     match.roomCode = roomCode;
@@ -320,6 +336,7 @@ bool FileDataStore::recordMatch(
     if (!appendMatch(match, error)) {
         return false;
     }
+    // 2) 逐玩家追加明细行
     for (const MatchPlayerStanding& standing : standings) {
         MatchPlayerRecord record;
         record.matchId = matchId;
@@ -335,7 +352,7 @@ bool FileDataStore::recordMatch(
         matchPlayers_.push_back(record);
     }
     matches_.push_back(match);
-    recordedMatchIds_.insert(matchId);
+    recordedMatchIds_.insert(matchId);  // 标记已记录
     return true;
 }
 
@@ -343,6 +360,7 @@ std::vector<MatchHistoryEntry> FileDataStore::matchesFor(
     PlayerId playerId, std::size_t limit) const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<MatchHistoryEntry> out;
+    // 从扁平明细中筛出该玩家，再关联对局主记录补全房间码/时间等
     for (const MatchPlayerRecord& record : matchPlayers_) {
         if (record.playerId != playerId) {
             continue;
@@ -366,6 +384,7 @@ std::vector<MatchHistoryEntry> FileDataStore::matchesFor(
         entry.deaths = record.deaths;
         out.push_back(std::move(entry));
     }
+    // 按结束时间倒序（最近的在前）并截断到 limit
     std::sort(out.begin(), out.end(),
               [](const MatchHistoryEntry& a, const MatchHistoryEntry& b) {
                   return a.endedAtMs > b.endedAtMs;
@@ -379,6 +398,7 @@ std::vector<MatchHistoryEntry> FileDataStore::matchesFor(
 std::vector<LeaderboardEntry> FileDataStore::leaderboard(
     std::size_t limit) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    // 以玩家为 key 聚合全部明细
     std::unordered_map<PlayerId, LeaderboardEntry> aggregate;
     for (const MatchPlayerRecord& record : matchPlayers_) {
         LeaderboardEntry& entry = aggregate[record.playerId];
@@ -386,7 +406,7 @@ std::vector<LeaderboardEntry> FileDataStore::leaderboard(
         entry.username = record.username;
         entry.totalScore += record.score;
         entry.games += 1;
-        entry.wins += record.rank == 1 ? 1 : 0;
+        entry.wins += record.rank == 1 ? 1 : 0;  // 第 1 名算胜场
         entry.bestScore = std::max(entry.bestScore, record.score);
     }
 
@@ -395,6 +415,7 @@ std::vector<LeaderboardEntry> FileDataStore::leaderboard(
     for (auto& item : aggregate) {
         out.push_back(std::move(item.second));
     }
+    // 排序：总分 -> 胜场 -> ID（ID 兜底保证顺序确定）
     std::sort(out.begin(), out.end(),
               [](const LeaderboardEntry& a, const LeaderboardEntry& b) {
                   if (a.totalScore != b.totalScore) {
@@ -421,9 +442,11 @@ StoreStats FileDataStore::stats() const {
     return stats;
 }
 
+// ------------------------------ 追加写 ------------------------------
+
 bool FileDataStore::appendPlayer(const PlayerProfile& profile,
                                  std::string& error) {
-    std::ofstream out(pathFor("players.tsv"), std::ios::app);
+    std::ofstream out(pathFor("players.tsv"), std::ios::app);  // app=只追加
     if (!out) {
         error = "cannot open players.tsv";
         return false;
@@ -473,9 +496,11 @@ bool FileDataStore::appendMatchPlayer(const MatchPlayerRecord& record,
 }
 
 std::string FileDataStore::generateToken() const {
+    // thread_local：每线程独立随机引擎，避免多线程争用同一个 RNG
     static thread_local std::mt19937_64 rng(std::random_device{}());
     const uint64_t first = rng();
     const uint64_t second = rng();
+    // 两个 64 位数拼成 32 个十六进制字符（128 位熵），几乎不可能碰撞
     std::ostringstream out;
     out << std::hex << std::setfill('0') << std::setw(16) << first
         << std::setw(16) << second;
@@ -488,13 +513,14 @@ std::string FileDataStore::normalizeUsername(
     out.reserve(username.size());
     for (unsigned char c : username) {
         if (c < 0x20u || c == 0x7Fu) {
-            continue;
+            continue;  // 丢弃控制字符
         }
         if (c >= 'A' && c <= 'Z') {
-            c = static_cast<unsigned char>(c - 'A' + 'a');
+            c = static_cast<unsigned char>(c - 'A' + 'a');  // 转小写
         }
         out.push_back(static_cast<char>(c));
     }
+    // 去掉首尾空格（注意：先处理字符再 trim）
     while (!out.empty() && out.front() == ' ') {
         out.erase(out.begin());
     }

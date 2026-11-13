@@ -118,21 +118,20 @@ export class Renderer {
   }
 
   /**
-   * 圈外危险区暗影（用 compositing 把圈内挖空）。
+   * 圈外危险区暗影：只填充“全屏减去安全区圆”的区域。
+   * 不能先用 destination-out 挖洞，那会把圈内已经画好的世界一起擦掉。
    */
   drawShrinkZone(ctx, world) {
     const center = this.worldToScreen(this.shrinkCenter.x, this.shrinkCenter.y);
     const rScreen = this.shrinkRadius * this.camera.zoom;
 
     ctx.save();
-    // 先全屏填一层深红
     ctx.fillStyle = PALETTE.shrinkZoneFill;
-    ctx.fillRect(0, 0, this.width, this.height);
-    // 再用 clip 把圈内挖空（恢复成原画）
-    ctx.globalCompositeOperation = 'destination-out';
     ctx.beginPath();
-    ctx.arc(center.x, center.y, rScreen, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.rect(0, 0, this.width, this.height);
+    // 反向圆 + evenodd：只保留矩形里圆外的部分
+    ctx.arc(center.x, center.y, rScreen, 0, Math.PI * 2, true);
+    ctx.fill('evenodd');
     ctx.restore();
   }
 

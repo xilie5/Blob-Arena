@@ -8,10 +8,11 @@ namespace blob {
 
 namespace {
 
+// 房间码字母表：去掉了易混淆的 I、L、O、0、1（玩家口头报码时不容易看错念错）
 constexpr char kCodeAlphabet[] = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 constexpr std::size_t kCodeAlphabetSize = sizeof(kCodeAlphabet) - 1;
-constexpr int kCodeLength = 4;
-constexpr int kCodeGenAttempts = 32;
+constexpr int kCodeLength = 4;          // 4 位码
+constexpr int kCodeGenAttempts = 32;    // 生成不碰撞房间码的最大尝试次数
 
 }  // namespace
 
@@ -27,6 +28,7 @@ Lobby::Lobby(uint32_t seed, float worldWidth, float worldHeight,
 
 Lobby::~Lobby() = default;
 
+// 大厅自己的 xorshift 随机数（与 World 中的实现相同，状态独立）
 uint32_t Lobby::nextRng() {
     uint32_t state = rngState_;
     state ^= state << 13;
@@ -37,6 +39,7 @@ uint32_t Lobby::nextRng() {
 }
 
 std::string Lobby::generateUniqueCode() {
+    // 多次尝试生成 4 位码，直到不与现有房间码冲突
     for (int attempt = 0; attempt < kCodeGenAttempts; ++attempt) {
         std::string code;
         code.reserve(kCodeLength);
@@ -47,7 +50,7 @@ std::string Lobby::generateUniqueCode() {
             return code;
         }
     }
-    return std::string();
+    return std::string();  // 极端情况下（房间极多）32 次都碰撞则失败
 }
 
 Room* Lobby::createRoom(bool publicMatch) {
@@ -55,12 +58,12 @@ Room* Lobby::createRoom(bool publicMatch) {
     if (code.empty()) {
         return nullptr;
     }
-    const uint32_t roomSeed = nextRng();
+    const uint32_t roomSeed = nextRng();  // 每个房间独立种子，世界布局各不相同
     auto room = std::make_unique<Room>(
         code, roomSeed, worldWidth_, worldHeight_,
         static_cast<std::size_t>(cfg::kArenaPlayers), publicMatch,
         countdownSec_, durationSec_, shrinkStartSec_);
-    Room* raw = room.get();
+    Room* raw = room.get();  // 先留裸指针，move 进 map 后返回给调用方
     rooms_.emplace(code, std::move(room));
     rebuildRoomList();
     std::printf("[lobby] room created code=%s public=%d seed=%u rooms=%zu\n",
@@ -70,11 +73,13 @@ Room* Lobby::createRoom(bool publicMatch) {
 }
 
 Room* Lobby::quickMatch() {
+    // 找到第一个“公共且当前可加入”的房间就进
     for (Room* room : roomList_) {
         if (room->isPublic() && room->canJoin()) {
             return room;
         }
     }
+    // 没有合适的公共房：新建一个公共房
     return createRoom(true);
 }
 
@@ -90,16 +95,17 @@ Room* Lobby::joinByCode(const std::string& code) {
 
 void Lobby::pruneEmptyRooms() {
     bool changed = false;
+    // 逐个销毁空房间；erase 返回下一个迭代器，安全地边遍历边删
     for (auto it = rooms_.begin(); it != rooms_.end();) {
         if (it->second->empty()) {
-            it = rooms_.erase(it);
+            it = rooms_.erase(it);  // unique_ptr 析构 -> 整个 World 内存释放
             changed = true;
         } else {
             ++it;
         }
     }
     if (changed) {
-        rebuildRoomList();
+        rebuildRoomList();  // 有销毁才重建，避免无意义拷贝
     }
 }
 
